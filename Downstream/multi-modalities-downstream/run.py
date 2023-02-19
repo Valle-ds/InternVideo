@@ -12,6 +12,8 @@ from CoTrain.datamodules.video.multitask_datamodule import MTDataModule
 import datetime
 from pytorch_lightning.utilities.cloud_io import get_filesystem
 from pytorch_lightning.utilities.cloud_io import load as pl_load
+from pytorch_lightning.loggers import WandbLogger
+import wandb 
 
 import torch
 from pytorch_lightning.strategies import DDPStrategy
@@ -54,11 +56,9 @@ def main(_config):
         instance_name = f'{exp_name}_seed{_config["seed"]}_from_multiple'
     else:
         instance_name = f'{exp_name}_seed{_config["seed"]}_from_{"_".join(_config["load_path"].split("/")[-2:])[:-5]}'
-    logger = pl.loggers.TensorBoardLogger(
-        _config["log_dir"],
-        name=instance_name,
-        version="version_0",
-    )
+    
+    wandb.login(key = '6f14de91cf14f3f40b53951e012cacd8c6e761b0')
+    logger = WandbLogger(project="InternVideo", )
 
     lr_callback = pl.callbacks.LearningRateMonitor(logging_interval="step")
 

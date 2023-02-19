@@ -27,3 +27,4 @@ transformers
 ftfy==6.1.1
 datasets
 pytorchvideo
+wandb
