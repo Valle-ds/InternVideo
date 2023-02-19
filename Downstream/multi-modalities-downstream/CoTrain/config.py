@@ -58,7 +58,7 @@ def config():
     vqav2_label_size = 3129
     msrvttqa_label_size = 1501
     max_text_len = 40  # original: 40, 200: for long sentences/paragraph
-    tokenizer = "pretrained/bert-base-uncased"
+    tokenizer = "bert-base-uncased"
     vocab_size = 30522
     whole_word_masking = False
     mlm_prob = 0.15
