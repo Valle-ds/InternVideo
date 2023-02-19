@@ -20,9 +20,7 @@ scikit_image==0.19.3
 scipy==1.7.1
 setuptools==58.2.0
 timm==0.4.5
-torch==1.9.0+cu111
 torchmetrics==0.9.1
-torchvision==0.10.0+cu111
 tqdm==4.64.0
 transformers==4.2.1
 tslearn==0.5.2
