@@ -2,10 +2,9 @@ from copy import deepcopy
 import torch
 import torch.nn as nn
 import pytorch_lightning as pl
-from CoTrain.modules import heads, cotrain_utils
+from CoTrain.modules import cotrain_utils
 from CoTrain.modules import objectives as objectives
-from CoTrain.modules import base_vision_transformer as vit
-from CoTrain.modules.text_prompt import text_prompt
+# from CoTrain.modules import base_vision_transformer as vit
 import os
 import matplotlib.pyplot as plt
 import math
@@ -106,7 +105,6 @@ class CLIP(pl.LightningModule):
         self.mim_prob = config["mim_prob"]
         self.qa_type = config["clip_qa_type"]
         self.mc_type = config["clip_mc_type"]
-        self.mmt = config["clip_mmt"]
         self.alt_data = config["clip_alt_data"]
 
         if config["clip_type"] == "kc_new":
@@ -122,13 +120,6 @@ class CLIP(pl.LightningModule):
                 device=self.device,
                 use_checkpoint=config["clip_use_checkpoint"],
                 checkpoint_num=config["clip_checkpoint_num"],
-                # mask_text=(
-                #     self.hparams.config["loss_names"]["mlm"] > 0
-                #     or (
-                #         self.hparams.config["loss_names"]["openend_vqa"] > 0
-                #         and self.qa_type in ["zs", "mlm", "vtc_mlm"]
-                #     )
-                # ),
             )
         else:
             raise NotImplementedError(
@@ -136,7 +127,7 @@ class CLIP(pl.LightningModule):
             )
 
         cotrain_utils.set_metrics(self)
-        self.current_tasks = list()
+        self.current_tasks = config['current_tasks']
 
         vision_width = self.clip.visual.conv1.weight.shape[0]
         transformer_width = self.clip.transformer.width
@@ -164,38 +155,10 @@ class CLIP(pl.LightningModule):
                     nn.LayerNorm(hs * 2),
                     nn.GELU(),
                     nn.Dropout(config["clip_cls_dropout"]),
-                    # nn.Linear(hs * 2, hs * 2),
-                    # nn.GELU(),
-                    # nn.Dropout(config["clip_cls_dropout"]),
-                    # nn.LayerNorm(hs * 2),
                     nn.Linear(hs * 2, vs),
                 )
                 self.vqa_classifier.apply(objectives.init_weights)
 
-        if self.hparams.config["loss_names"]["multiple_choice"] > 0:
-            if self.mc_type == "vtc":
-                pass
-            elif self.mc_type == "cap":
-                hs = transformer_width
-            elif self.mc_type == "vtc_cap":
-                # We cat the vision feature, text feature
-                # and cross feature together
-                hs = vision_width + transformer_width * 2
-            else:
-                raise NotImplementedError("MC Type {} Not Implemented")
-
-            if self.mc_type in ["cap", "vtc_cap"]:
-                self.clip.text_projection = None
-                self.clip.visual_proj = None
-                self.rank_output = nn.Sequential(
-                    nn.Dropout(config["clip_cls_dropout"]),
-                    nn.Linear(hs, hs * 2),
-                    nn.LayerNorm(hs * 2),
-                    nn.GELU(),
-                    nn.Dropout(config["clip_cls_dropout"]),
-                    nn.Linear(hs * 2, 1),
-                )
-                self.rank_output.apply(objectives.init_weights)
 
         if (
             self.hparams.config["loss_names"]["cap"] > 0
@@ -297,26 +260,6 @@ class CLIP(pl.LightningModule):
         self.grad_unfreeze_int = config["clip_grad_unfreeze_int"]
         if self.grad_unfreeze_int > 0:
             self.freeze_clip()
-
-        if self.mmt:
-            # MoCo Setting
-            K = 65536
-            m = 0.999
-            dim = self.clip.embed_dim
-            self.K = K
-            self.m = m
-
-            self.clip_k = deepcopy(self.clip)
-            for p in self.clip_k.parameters():
-                p.requires_grad = False  # not update by gradient
-
-            # create the queue
-            self.register_buffer("queue_visual", torch.randn(dim, K))
-            self.register_buffer("queue_text", torch.randn(dim, K))
-            self.queue_visual = nn.functional.normalize(self.queue_visual, dim=0)
-            self.queue_text = nn.functional.normalize(self.queue_text, dim=0)
-
-            self.register_buffer("queue_ptr", torch.zeros(1, dtype=torch.long))
 
     def freeze_clip_evl(self):
         for n, p in self.named_parameters():
@@ -519,49 +462,6 @@ class CLIP(pl.LightningModule):
             "special_tokens_mask": special_tokens_mask,  # N, L
         }
 
-        if self.mmt:
-            # compute key features
-            with torch.no_grad():  # no gradient to keys
-                self._momentum_update_key_encoder()  # update the key encoder
-                assert not any([mask_text, mask_video, mode != "video"])
-                # TODO: We have BN, batch shuffle ?
-                text_feats_k = self.clip_k.encode_text(text_ids, return_all_feats=False)
-                # img, idx_unshuffle = batch_shuffle_ddp(img)
-                video_feats_k = self.clip_k.encode_video(
-                    video, return_all_feats=False, mode=mode
-                )
-                # video_feats_k = batch_unshuffle_ddp(video_feats_k, idx_unshuffle)
-                ret.update(
-                    {
-                        "text_feats_k": text_feats_k,
-                        "video_feats_k": video_feats_k,
-                    }
-                )
-
-        # Mask Text Decoder ##################################################
-        if mask_text:
-            text_con_feats = text_feats
-            text_feats = self.text_decoder(text_all_feats, video_all_feats)
-            ret.update(
-                {
-                    # ! Modified the original, no other loss should do the same
-                    "text_feats": text_feats,  # N, C
-                    "text_labels": text_labels,  # N, L
-                    "text_contrastive_feats": text_con_feats,  # N, L
-                }
-            )
-
-        # Mask Visual Decoder#################################################
-        if mask_video and hasattr(self, "visual_decoder"):
-            mim_video_feats = self.visual_decoder(
-                video_all_feats, visual_masked_indices
-            )
-            ret.update(
-                {
-                    "mim_video_feats": mim_video_feats,  # N, L, C
-                    "visual_masked_indices": visual_masked_indices,  # N, L
-                }
-            )
 
         # Caption decoder   ##################################################
         if caption:
@@ -609,75 +509,11 @@ class CLIP(pl.LightningModule):
             ret.update(self.infer(batch, mode=mode))
             return ret
 
-        if "contrastive" in self.current_tasks:
-            mask_text = "mlm" in self.current_tasks
-            mask_video = "mim" in self.current_tasks
-            caption = "cap" in self.current_tasks
-            if any([mask_text, mask_video, caption]):
-                contrastive_ret, contrastive_infer = objectives.compute_contrastive(
-                    self,
-                    batch,
-                    return_infer=True,
-                    mask_text=mask_text,
-                    mask_video=mask_video,
-                    caption=caption,
-                    mode=mode,
-                )
-                ret.update(contrastive_ret)
-            else:
-                ret.update(objectives.compute_contrastive(self, batch, mode=mode))
-
-        if "multiple_choice" in self.current_tasks:
-            ret.update(objectives.compute_multiple_choice(self, batch))
-
         if "openend_vqa" in self.current_tasks:
             ret.update(objectives.compute_openend_vqa(self, batch))
 
-        if "mlm" in self.current_tasks:
-            if "contrastive" in self.current_tasks:  # Skip infer
-                ret.update(objectives.compute_mlm(self, batch, infer=contrastive_infer))
-            else:
-                ret.update(objectives.compute_mlm(self, batch))
-
-        if "mim" in self.current_tasks and hasattr(self, "visual_decoder"):
-            if "contrastive" in self.current_tasks:  # Skip infer
-                ret.update(
-                    objectives.compute_mim(
-                        self, batch, infer=contrastive_infer, mode=mode
-                    )
-                )
-            else:
-                ret.update(objectives.compute_mim(self, batch))
-
-        if "cap" in self.current_tasks:
-            if "contrastive" in self.current_tasks:  # Skip infer
-                ret.update(
-                    objectives.compute_cap(
-                        self, batch, infer=contrastive_infer, mode=mode
-                    )
-                )
-            else:
-                ret.update(objectives.compute_cap(self, batch, mode=mode))
-
-        if "zs_classify" in self.current_tasks:
-            if self.text_ret is None:
-                # print(f"Generate text features for in batch-{batch_idx}")
-                self.text_ret = self.forward_text()
-            ret.update(objectives.compute_zs_classify(self, batch, self.text_ret))
-
         return ret
 
-    def forward_text(self):
-        classes, num_text_aug, _ = text_prompt(prompt_type=self.prompt_type)
-        text_inputs = classes.to(self.device)
-        text_feats = self.clip.encode_text(text_inputs)
-        # text_feats /= text_feats.norm(dim=-1, keepdim=True)
-
-        ret = {
-            "text_feats": text_feats,  # num_text_aug * num_classes, C
-            "num_text_aug": num_text_aug,
-        }
-        return ret
 
     def forward_video(self, batch):
         img = batch["video"][0]
