@@ -87,7 +87,7 @@ def config():
     warmup_steps = 2500
     end_lr = 0
     lr_mult = 1  # multiply lr for downstream heads
-    backend = 'a100'  # gpu: a100/v100/others
+    backend = 'others'  # gpu: a100/v100/others
 
     # Downstream Setting
     get_recall_metric = False

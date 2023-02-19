@@ -22,5 +22,7 @@ setuptools==58.2.0
 timm==0.4.5
 torchmetrics==0.9.1
 tqdm==4.64.0
-transformers==4.2.1
 tslearn==0.5.2
+transformers==4.26.0
+ftfy==6.1.1
+datasets==1.7.0
